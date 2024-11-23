@@ -1,7 +1,7 @@
 ﻿let messageBanner;
 let selectionBox;
 let isSelecting = false;
-let isFrozen = false;
+let pdfCanvas;
 
 // Set the worker source for PDF.js
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.10.377/pdf.worker.min.js';
@@ -14,90 +14,105 @@ Office.onReady(() => {
         messageBanner.hideBanner();
 
         $('#pdf-file-input').on('change', handleFileSelect);
-        document.getElementById('snippet-button').addEventListener('click', toggleSnippetMode);
-        document.getElementById('confirm-snippet-button').addEventListener('click', confirmSnippet);
+        pdfCanvas = document.getElementById('pdf-canvas');
+        
+        // Add event listeners directly to the document
+        document.addEventListener('mousedown', handleMouseDown);
+        document.addEventListener('mousemove', handleMouseMove);
+        document.addEventListener('mouseup', handleMouseUp);
     });
 });
 
-function toggleSnippetMode() {
-    if (isFrozen) {
-        resetSelection();
-    } else {
-        enableSnippetMode();
-    }
-}
+function handleMouseDown(e) {
+    const container = document.getElementById('pdf-viewer-container');
+    const rect = container.getBoundingClientRect();
+    
+    // Only start selection if click is inside the PDF viewer
+    if (e.clientX >= rect.left && e.clientX <= rect.right &&
+        e.clientY >= rect.top && e.clientY <= rect.bottom) {
+        
+        if (selectionBox) {
+            document.body.removeChild(selectionBox);
+        }
 
-function enableSnippetMode() {
-    const pdfCanvas = document.getElementById('pdf-canvas');
-    selectionBox = document.createElement('div');
-    selectionBox.style.position = 'absolute';
-    selectionBox.style.border = '2px dashed #0078d4';
-    selectionBox.style.zIndex = '1000';
-    document.body.appendChild(selectionBox);
+        selectionBox = document.createElement('div');
+        selectionBox.style.position = 'absolute';
+        selectionBox.style.border = '2px dashed #0078d4';
+        selectionBox.style.backgroundColor = 'rgba(0, 120, 212, 0.1)';
+        selectionBox.style.zIndex = '1000';
+        document.body.appendChild(selectionBox);
 
-    let startX, startY;
-
-    const onMouseDown = (e) => {
-        if (isFrozen) return;
-        startX = e.pageX;
-        startY = e.pageY;
         isSelecting = true;
-        selectionBox.style.left = `${startX}px`;
-        selectionBox.style.top = `${startY}px`;
-    };
-
-    const onMouseMove = (e) => {
-        if (!isSelecting || isFrozen) return;
-        const currentX = e.pageX;
-        const currentY = e.pageY;
-        selectionBox.style.width = `${Math.abs(currentX - startX)}px`;
-        selectionBox.style.height = `${Math.abs(currentY - startY)}px`;
-        selectionBox.style.left = `${Math.min(currentX, startX)}px`;
-        selectionBox.style.top = `${Math.min(currentY, startY)}px`;
-    };
-
-    const onMouseUp = () => {
-        if (isFrozen) return;
-        isSelecting = false;
-        isFrozen = true;
-        pdfCanvas.removeEventListener('mousedown', onMouseDown);
-        pdfCanvas.removeEventListener('mousemove', onMouseMove);
-        pdfCanvas.removeEventListener('mouseup', onMouseUp);
-    };
-
-    pdfCanvas.addEventListener('mousedown', onMouseDown);
-    pdfCanvas.addEventListener('mousemove', onMouseMove);
-    pdfCanvas.addEventListener('mouseup', onMouseUp);
-}
-
-function confirmSnippet() {
-    if (!selectionBox) return;
-
-    const pdfCanvas = document.getElementById('pdf-canvas');
-    const rect = selectionBox.getBoundingClientRect();
-    html2canvas(pdfCanvas, {
-        x: rect.left,
-        y: rect.top,
-        width: rect.width,
-        height: rect.height
-    }).then(canvas => {
-        const link = document.createElement('a');
-        link.href = canvas.toDataURL();
-        link.download = 'snippet.png';
-        link.click();
-
-        resetSelection();
-    }).catch(error => {
-        console.error('Error capturing snippet:', error);
-    });
-}
-
-function resetSelection() {
-    if (selectionBox) {
-        document.body.removeChild(selectionBox);
-        selectionBox = null;
+        selectionBox.style.left = `${e.pageX}px`;
+        selectionBox.style.top = `${e.pageY}px`;
     }
-    isFrozen = false;
+}
+
+function handleMouseMove(e) {
+    if (!isSelecting || !selectionBox) return;
+
+    const startX = parseInt(selectionBox.style.left);
+    const startY = parseInt(selectionBox.style.top);
+    
+    const width = Math.abs(e.pageX - startX);
+    const height = Math.abs(e.pageY - startY);
+
+    selectionBox.style.width = `${width}px`;
+    selectionBox.style.height = `${height}px`;
+    selectionBox.style.left = `${Math.min(e.pageX, startX)}px`;
+    selectionBox.style.top = `${Math.min(e.pageY, startY)}px`;
+}
+
+function handleMouseUp(e) {
+    if (!isSelecting || !selectionBox) return;
+    isSelecting = false;
+
+    const width = parseInt(selectionBox.style.width);
+    const height = parseInt(selectionBox.style.height);
+
+    if (width > 10 && height > 10) {
+        captureScreenshot(selectionBox.getBoundingClientRect());
+    }
+
+    // Clean up
+    document.body.removeChild(selectionBox);
+    selectionBox = null;
+}
+
+function captureScreenshot(rect) {
+    const pdfCanvas = document.getElementById('pdf-canvas');
+    const canvasRect = pdfCanvas.getBoundingClientRect();
+
+    // Calculate relative position to PDF canvas
+    const x = rect.left - canvasRect.left;
+    const y = rect.top - canvasRect.top;
+
+    html2canvas(pdfCanvas, {
+        x: x,
+        y: y,
+        width: rect.width,
+        height: rect.height,
+        backgroundColor: null,
+        useCORS: true,
+        scale: window.devicePixelRatio
+    }).then(canvas => {
+        // Save to file
+        canvas.toBlob(blob => {
+            // Save to file
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = 'snippet.png';
+            link.click();
+
+            // Copy to clipboard
+            const item = new ClipboardItem({ 'image/png': blob });
+            navigator.clipboard.write([item]).catch(err => {
+                console.error('Error copying to clipboard:', err);
+            });
+        });
+    }).catch(error => {
+        console.error('Error capturing screenshot:', error);
+    });
 }
 
 function handleFileSelect(event) {
@@ -124,7 +139,7 @@ function handleFileSelect(event) {
                 page.render(renderContext);
                 $('#pdf-viewer-container').show();
             }).catch(error => {
-                console.error('Error loading PDF: ', error);
+                console.error('Error loading PDF:', error);
             });
         };
         fileReader.readAsArrayBuffer(file);
